@@ -1,6 +1,9 @@
 name: Run quest auto completion bot
 
 on:
+    # Chạy tự động mỗi 3 ngày theo lịch tháng, vào 00:00 UTC.
+    schedule:
+        - cron: '0 0 */3 * *'
     workflow_dispatch: {}
 
 jobs:
