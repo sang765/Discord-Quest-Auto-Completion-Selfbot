@@ -2,6 +2,7 @@ import { Constants } from './constants';
 import { fetch } from 'undici';
 import * as readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
+import type { ClientQuest } from './client';
 
 export class Utils extends null {
 	public static makeHeaders(init: HeadersInit | undefined) {
@@ -82,13 +83,77 @@ export class Utils extends null {
 		});
 		return result;
 	}
+	public static async getProxyTicket(
+		applicationId: string,
+		client: ClientQuest,
+	): Promise<string> {
+		// https://discord.com/api/v9/applications/1495767543946809424/proxy-tickets
+		const ticket = (await client.rest.post(
+			`/applications/${applicationId}/proxy-tickets`,
+			{
+				body: {},
+			},
+		)) as {
+			ticket: string;
+			expires_at: string;
+			application_id: string;
+			user_id: string;
+		};
+		return ticket.ticket;
+	}
+	public static async getActivityReferrer(
+		applicationId: string,
+		client: ClientQuest,
+	): Promise<string> {
+		const proxyTicket = await Utils.getProxyTicket(applicationId, client);
+		const referrer = new URL(`https://${applicationId}.discordsays.com/`);
+
+		referrer.searchParams.set('instance_id', 'example-cl-instance');
+		referrer.searchParams.set('platform', 'desktop');
+		referrer.searchParams.set('discord_proxy_ticket', proxyTicket);
+
+		return referrer.toString();
+	}
+	public static getActivityHeaders(
+		questId: string,
+		authToken: string = '',
+		activityReferrer?: string,
+	): Record<string, string> {
+		const headers: Record<string, string> = {
+			'Content-Type': 'application/json',
+			'X-Auth-Token': authToken,
+			'X-Discord-Quest-ID': questId,
+		};
+		if (activityReferrer) {
+			headers.Referer = activityReferrer;
+		}
+		return headers;
+	}
+
 	public static async authorizeDiscordSays(
 		applicationId: string,
+		questId: string,
 		authCode: string,
-	): Promise<{ token: string | false; error: any }> {
+		client: ClientQuest,
+	): Promise<{
+		token: string | false;
+		error: any;
+		activityReferrer: string;
+	}> {
 		let error = null;
 		const headers = Utils.makeDesktopHeaders(false, false);
-		headers.append('Content-Type', 'application/json');
+		const activityReferrer = await Utils.getActivityReferrer(
+			applicationId,
+			client,
+		);
+		const discordSaysHeaders = Utils.getActivityHeaders(
+			questId,
+			'',
+			activityReferrer,
+		);
+		for (const [key, value] of Object.entries(discordSaysHeaders)) {
+			headers.append(key, value);
+		}
 		const token = await fetch(
 			`https://${applicationId}.discordsays.com/.proxy/acf/authorize`,
 			{
@@ -105,20 +170,29 @@ export class Utils extends null {
 			)
 			.then((data) => data.token)
 			.catch((e) => {
+				console.error('Error authorizing with Discord Says:', e);
 				error = e instanceof Error ? e.message : String(e);
 				return '';
 			});
-		return { token, error };
+		return { token, error, activityReferrer };
 	}
 	public static async progressDiscordSays(
 		applicationId: string,
+		questId: string,
 		token: string,
 		questTarget: number,
+		activityReferrer: string,
 	): Promise<{ success: boolean; error: any }> {
 		let error = null;
 		const headers = Utils.makeDesktopHeaders(false, false);
-		headers.append('Content-Type', 'application/json');
-		headers.append('x-auth-token', token);
+		const discordSaysHeaders = Utils.getActivityHeaders(
+			questId,
+			token,
+			activityReferrer,
+		);
+		for (const [key, value] of Object.entries(discordSaysHeaders)) {
+			headers.append(key, value);
+		}
 		const success = await fetch(
 			`https://${applicationId}.discordsays.com/.proxy/acf/quest/progress`,
 			{
@@ -198,7 +272,10 @@ export class Utils extends null {
 			return;
 		}
 	}
-	public static async extractWebhookInfo(): Promise<{ id: string; token: string } | null> {
+	public static async extractWebhookInfo(): Promise<{
+		id: string;
+		token: string;
+	} | null> {
 		const webhookUrl = process.env.WEBHOOK_URL;
 		if (!webhookUrl) {
 			console.warn('WEBHOOK_URL not set in environment variables.');
